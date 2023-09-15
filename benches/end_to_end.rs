@@ -140,6 +140,21 @@ fn http2_parallel_x10_req_10mb(b: &mut test::Bencher) {
 }
 
 #[bench]
+fn http2_parallel_x10_both_500b_disable_vector_io(b: &mut test::Bencher) {
+    let body = &[b'x'; 500];
+    opts()
+        .http2()
+        .parallel(10)
+        .method(Method::POST)
+        .request_body(body)
+        .response_body(body)
+        .http2_stream_window(HTTP2_MAX_WINDOW)
+        .http2_conn_window(HTTP2_MAX_WINDOW)
+        .disable_vectored_io()
+        .bench(b)
+}
+
+#[bench]
 #[ignore]
 fn http2_parallel_x10_req_10kb_100_chunks(b: &mut test::Bencher) {
     let body = &[b'x'; 1024 * 10];
@@ -206,6 +221,7 @@ fn http2_parallel_x10_res_10mb(b: &mut test::Bencher) {
 
 #[derive(Clone)]
 struct Opts {
+    disable_vectored_io: bool,
     http2: bool,
     http2_stream_window: Option<u32>,
     http2_conn_window: Option<u32>,
@@ -219,6 +235,7 @@ struct Opts {
 
 fn opts() -> Opts {
     Opts {
+        disable_vectored_io: false,
         http2: false,
         http2_stream_window: None,
         http2_conn_window: None,
@@ -232,6 +249,11 @@ fn opts() -> Opts {
 }
 
 impl Opts {
+    fn disable_vectored_io(mut self) -> Self {
+        self.disable_vectored_io = true;
+        self
+    }
+
     fn http2(mut self) -> Self {
         self.http2 = true;
         self
@@ -315,7 +337,10 @@ impl Opts {
         let mut client = rt.block_on(async {
             if self.http2 {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
-                let io = support::TokioIo::new(tcp);
+                let mut io = support::TokioIo::new(tcp);
+                if self.disable_vectored_io {
+                    io = io.disable_vectored_io();
+                }
                 let (tx, conn) = hyper::client::conn::http2::Builder::new(support::TokioExecutor)
                     .initial_stream_window_size(self.http2_stream_window)
                     .initial_connection_window_size(self.http2_conn_window)
@@ -329,7 +354,10 @@ impl Opts {
                 todo!("http/1 parallel >1");
             } else {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
-                let io = support::TokioIo::new(tcp);
+                let mut io = support::TokioIo::new(tcp);
+                if self.disable_vectored_io {
+                    io = io.disable_vectored_io();
+                }
                 let (tx, conn) = hyper::client::conn::http1::Builder::new()
                     .handshake(io)
                     .await
@@ -415,7 +443,10 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
     let opts = opts.clone();
     rt.spawn(async move {
         while let Ok((sock, _)) = listener.accept().await {
-            let io = support::TokioIo::new(sock);
+            let mut io = support::TokioIo::new(sock);
+            if opts.disable_vectored_io {
+                io = io.disable_vectored_io();
+            }
             if opts.http2 {
                 tokio::spawn(
                     hyper::server::conn::http2::Builder::new(support::TokioExecutor)

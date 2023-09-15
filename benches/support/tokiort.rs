@@ -92,6 +92,7 @@ impl TokioSleep {
 pin_project! {
     #[derive(Debug)]
     pub struct TokioIo<T> {
+        disable_vectored_io: bool,
         #[pin]
         inner: T,
     }
@@ -99,11 +100,19 @@ pin_project! {
 
 impl<T> TokioIo<T> {
     pub fn new(inner: T) -> Self {
-        Self { inner }
+        Self {
+            disable_vectored_io: false,
+            inner,
+        }
     }
 
     pub fn inner(self) -> T {
         self.inner
+    }
+
+    pub fn disable_vectored_io(mut self) -> Self {
+        self.disable_vectored_io = true;
+        self
     }
 }
 
@@ -155,7 +164,7 @@ where
     }
 
     fn is_write_vectored(&self) -> bool {
-        tokio::io::AsyncWrite::is_write_vectored(&self.inner)
+        !self.disable_vectored_io && tokio::io::AsyncWrite::is_write_vectored(&self.inner)
     }
 
     fn poll_write_vectored(
@@ -163,6 +172,7 @@ where
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<Result<usize, std::io::Error>> {
+        assert!(!self.disable_vectored_io);
         tokio::io::AsyncWrite::poll_write_vectored(self.project().inner, cx, bufs)
     }
 }
@@ -223,7 +233,7 @@ where
     }
 
     fn is_write_vectored(&self) -> bool {
-        hyper::rt::Write::is_write_vectored(&self.inner)
+        !self.disable_vectored_io && hyper::rt::Write::is_write_vectored(&self.inner)
     }
 
     fn poll_write_vectored(
@@ -231,6 +241,7 @@ where
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<Result<usize, std::io::Error>> {
+        assert!(!self.disable_vectored_io);
         hyper::rt::Write::poll_write_vectored(self.project().inner, cx, bufs)
     }
 }
